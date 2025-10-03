@@ -1,126 +1,159 @@
-import os
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
-import streamlit as st
-from dotenv import load_dotenv
-
-from src.nasa_chat.chatbot import ChatBot
-
-
-def _format_sources(sources: List[Dict[str, str]]) -> str:
-    if not sources:
-        return ""
-    lines = []
-    for s in sources:
-        title = s.get("title") or "NASA"
-        nasa_id = s.get("nasa_id") or ""
-        url = s.get("preview_url") or ""
-        if url:
-            lines.append(f"- {title} ({nasa_id}): {url}")
-        else:
-            lines.append(f"- {title} ({nasa_id})")
-    return "\n".join(lines)
+from .nasa_api import NASAAPI
+from .simplifier import Simplifier
+from .translator import Translator
+from .captioner import ImageCaptioner
 
 
-def _ensure_bot(lang: str, use_vision: bool, api_key: str, audience: str, model_name: str) -> None:
-    # Create or update bot if settings changed
-    if "bot" not in st.session_state:
-        st.session_state.bot = ChatBot(
-            language=lang,
-            use_vision=use_vision,
-            api_key=api_key,
-            simplifier_model=model_name,
-            audience=audience,
+class ChatBot:
+    """
+    NASA-aware chat assistant that can:
+    - Answer text questions using NASA Image and Video Library search
+    - Describe uploaded images (optional) using BLIP captioner
+    - Translate answers to Arabic or English
+    - Simplify explanations for non-experts or kids
+    """
+
+    def __init__(
+        self,
+        language: str = "ar",
+        use_vision: bool = True,
+        api_key: Optional[str] = None,
+        simplifier_model: str = "google/flan-t5-base",
+        audience: str = "child",
+    ):
+        self.language = language.lower()
+        self.nasa = NASAAPI(api_key=api_key)
+        self.simplifier = Simplifier(model_name=simplifier_model)
+        self.audience = audience if audience in {"child", "general"} else "child"
+        self.translator = Translator(source_lang="en", target_lang=self.language)
+        self.captioner = ImageCaptioner() if use_vision else None
+        self.history: List[Dict[str, Any]] = []
+
+    def ask(self, query: str) -> Dict[str, Any]:
+        """
+        Handle a text-only query. Strategy:
+        - If target language is Arabic, translate query to English for NASA search
+        - Search NASA Image Library with the (English) query
+        - Aggregate top results descriptions as technical context
+        - Simplify in English, then translate if target language is Arabic
+        """
+        english_query = (
+            self.translator.translate(query, source_lang=self.language, target_lang="en")
+            if self.language != "en"
+            else query
+        ).strip()
+
+        results = self.nasa.search_images(english_query)
+        if not results:
+            # Second-pass expansions to improve recall
+            expansions = []
+            ql = english_query.lower()
+            if "earth" not in ql:
+                expansions.append(f"{english_query} earth")
+            if "ocean" not in ql and "sea" not in ql:
+                expansions.extend(["ocean", "sea", "earth oceans", "ocean currents"])
+            for ex in expansions:
+                try:
+                    results = self.nasa.search_images(ex)
+                    if results:
+                        english_query = ex
+                        break
+                except Exception:
+                    continue
+
+        if not results:
+            technical = f"No NASA image results found for: {query}"
+            simple_en = self.simplifier.simplify(
+                "Explain Earth's oceans from a NASA perspective: satellites observe sea surface temperature, sea level, "
+                "currents, color (chlorophyll), and storms. Why oceans matter and how space helps us monitor them."
+            , audience=self.audience)
+            simple = (
+                self.translator.translate(simple_en, source_lang="en", target_lang="ar")
+                if self.language == "ar"
+                else simple_en
+            )
+            resp = {"technical": technical, "simple": simple, "sources": []}
+            self._remember(query, resp)
+            return resp
+
+        # Aggregate top descriptions for richer context
+        k = min(5, len(results))
+        selected = results[:k]
+        descriptions: List[str] = []
+        for it in selected:
+            d = it.get("description") or it.get("title") or ""
+            if d:
+                descriptions.append(d)
+        technical_context = (
+            f"NASA results overview for query '{english_query}':\n\n" + "\n\n".join(descriptions)
+            if descriptions
+            else (selected[0].get("description") or selected[0].get("title") or "NASA result")
         )
-        return
-    b = st.session_state.bot
-    changed = (
-        b.language != lang
-        or bool(b.captioner) != use_vision
-        or getattr(b, "audience", "child") != audience
-    )
-    if changed:
-        st.session_state.bot = ChatBot(
-            language=lang,
-            use_vision=use_vision,
-            api_key=api_key,
-            simplifier_model=model_name,
-            audience=audience,
+
+        simple_en = self.simplifier.simplify(technical_context, audience=self.audience)
+        simple = (
+            self.translator.translate(simple_en, source_lang="en", target_lang="ar")
+            if self.language == "ar"
+            else simple_en
         )
+        formatted_sources = [
+            {"title": it.get("title"), "preview_url": it.get("preview_url"), "nasa_id": it.get("nasa_id")}
+            for it in selected
+        ]
+        resp = {"technical": technical_context, "simple": simple, "sources": formatted_sources}
+        self._remember(query, resp)
+        return resp
 
+    def describe_image(self, image_path: str) -> Dict[str, Any]:
+        """
+        Handle an image by captioning and then searching NASA with the caption keywords.
+        """
+        if not self.captioner:
+            technical = "Vision module is disabled."
+            simple_en = self.simplifier.simplify(technical, audience=self.audience)
+            simple = (
+                self.translator.translate(simple_en, source_lang="en", target_lang="ar")
+                if self.language == "ar"
+                else simple_en
+            )
+            resp = {"technical": technical, "simple": simple, "sources": []}
+            self._remember(f"[image]{image_path}", resp)
+            return resp
 
-def main():
-    load_dotenv()
-    st.set_page_config(page_title="NASA Chat AI", page_icon="🛰️", layout="centered")
-    st.title("NASA Chat AI")
-    st.caption("Answers from NASA data, simplified for everyone. Arabic and English supported.")
+        caption = self.captioner.caption(image_path)
+        results = self.nasa.search_images(caption)
+        if not results:
+            technical = f"Caption: {caption}. No related NASA results found."
+            simple_en = self.simplifier.simplify(technical, audience=self.audience)
+            simple = (
+                self.translator.translate(simple_en, source_lang="en", target_lang="ar")
+                if self.language == "ar"
+                else simple_en
+            )
+            resp = {"technical": technical, "simple": simple, "sources": []}
+            self._remember(f"[image]{image_path}", resp)
+            return resp
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+        top = results[0]
+        technical_desc = top.get("description") or top.get("title") or "NASA result"
+        combined = f"Image caption: {caption}\n\nNASA context: {technical_desc}"
+        simple_en = self.simplifier.simplify(combined, audience=self.audience)
+        simple = (
+            self.translator.translate(simple_en, source_lang="en", target_lang="ar")
+            if self.language == "ar"
+            else simple_en
+        )
+        formatted_sources = [
+            {"title": top.get("title"), "preview_url": top.get("preview_url"), "nasa_id": top.get("nasa_id")}
+        ]
+        resp = {"technical": combined, "simple": simple, "sources": formatted_sources}
+        self._remember(f"[image]{image_path}", resp)
+        return resp
 
-    st.sidebar.header("Settings")
-    default_key = os.getenv(
-        "NASA_API_KEY",
-        "CMsM6hmWSzJRL6YQfDowF4SK5PWAcbK527hfhE1d"  # provided key (can be replaced in .env)
-    )
-    api_key = st.sidebar.text_input("NASA API key", value=default_key, type="password")
-    lang = st.sidebar.selectbox("Answer language", options=["ar", "en"], index=0)
-    audience = st.sidebar.selectbox("Audience", options=["child", "general"], index=0)
-    model_name = st.sidebar.selectbox(
-        "Simplifier model",
-        options=["google/flan-t5-small", "google/flan-t5-base"],
-        index=1,
-        help="Base is better quality, small is faster on CPU."
-    )
-    use_vision = st.sidebar.checkbox("Enable image understanding (BLIP)", value=True)
+    def _remember(self, user_input: str, response: Dict[str, Any]) -> None:
+        self.history.append({"input": user_input, "response": response})
 
-    col1, col2 = st.sidebar.columns(2)
-    if col1.button("Clear chat"):
-        st.session_state.messages = []
-        if "bot" in st.session_state:
-            st.session_state.bot.reset()
-    if col2.button("Apply settings"):
-        pass  # settings applied on next ask/describe
-
-    _ensure_bot(lang, use_vision, api_key, audience, model_name)
-
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    prompt = st.chat_input("اكتب سؤالك عن ناسا/الأقمار/الأرض/المحيطات هنا...")
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        resp = st.session_state.bot.ask(prompt.strip())
-        content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
-        src = _format_sources(resp["sources"])
-        if src:
-            content += f"\n\n### المصادر\n{src}"
-        st.session_state.messages.append({"role": "assistant", "content": content})
-        st.rerun()
-
-    st.divider()
-    st.subheader("وصف صورة والبحث عن سياق من ناسا")
-    img = st.file_uploader("ارفع صورة (PNG/JPG)", type=["png", "jpg", "jpeg"])
-    if img is not None and st.button("وصف والبحث"):
-        tmp_path = f"/tmp/{img.name}"
-        with open(tmp_path, "wb") as f:
-            f.write(img.getbuffer())
-        resp = st.session_state.bot.describe_image(tmp_path)
-        content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
-        src = _format_sources(resp["sources"])
-        if src:
-            content += f"\n\n### المصادر\n{src}"
-        st.session_state.messages.append({"role": "assistant", "content": content})
-        st.experimental_rerun()
-
-    st.divider()
-    st.markdown(
-        "Notes: Uses NASA public APIs (Image Library). "
-        "Image captioning uses BLIP base locally. Text simplification uses FLAN‑T5. "
-        "Arabic translation uses MarianMT."
-    )
-
-
-if __name__ == "__main__":
-    main()
+    def reset(self) -> None:
+        self.history.clear()
