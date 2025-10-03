@@ -117,6 +117,8 @@ class ChatBot:
     def describe_image(self, image_path: str) -> Dict[str, Any]:
         """
         Handle an image by captioning and then searching NASA with the caption keywords.
+        Uses intelligent query expansions to improve recall (e.g., sun → SDO, SOHO, solar flare).
+        Aggregates multiple NASA descriptions for richer context.
         """
         if not self.captioner:
             technical = "Vision module is disabled."
@@ -130,11 +132,58 @@ class ChatBot:
             self._remember(f"[image]{image_path}", resp)
             return resp
 
-        caption = self.captioner.caption(image_path)
-        results = self.nasa.search_images(caption)
+        caption = self.captioner.caption(image_path).strip()
+        cq = caption.lower()
+
+        # Build query expansions
+        queries: List[str] = [caption]
+        # Correct common mis-caption like "hub" → "Hubble"
+        if " hub " in f" {cq} ":
+            queries.append("hubble")
+            queries.append("hubble telescope")
+        # Sun/solar related expansions
+        if any(k in cq for k in ["sun", "solar", "corona", "sunspot", "flare"]):
+            queries.extend([
+                "sun", "solar", "SDO", "SOHO", "solar dynamics observatory",
+                "parker solar probe", "solar flare", "sunspots", "coronal mass ejection"
+            ])
+        # Earth/general expansions
+        if len(queries) == 1:
+            if any(k in cq for k in ["cloud", "atmosphere"]):
+                queries.extend(["earth clouds", "atmosphere earth from space", "EPIC Earth"])
+            elif any(k in cq for k in ["ocean", "sea"]):
+                queries.extend(["earth oceans", "ocean currents satellite", "sea surface temperature"])
+            elif any(k in cq for k in ["forest", "vegetation", "green"]):
+                queries.extend(["earth vegetation", "NDVI", "forest earth from space"])
+            else:
+                queries.extend(["earth from space", "satellite earth image"])
+
+        # Try searches until we get results
+        results: List[Dict[str, Any]] = []
+        for q in queries:
+            try:
+                r = self.nasa.search_images(q)
+            except Exception:
+                r = []
+            if r:
+                results = r
+                break
+
         if not results:
-            technical = f"Caption: {caption}. No related NASA results found."
-            simple_en = self.simplifier.simplify(technical, audience=self.audience)
+            technical = f"Image caption: {caption}. No related NASA results found after expansions."
+            # Provide a helpful fallback explanation tailored to caption theme
+            if any(k in cq for k in ["sun", "solar"]):
+                fallback = (
+                    "NASA studies the Sun using space missions like SDO and SOHO. "
+                    "They observe sunspots, solar flares, and the corona to understand space weather, "
+                    "which can affect satellites and power grids on Earth."
+                )
+            else:
+                fallback = (
+                    "Satellites observe Earth to measure clouds, oceans, forests, and atmosphere. "
+                    "These observations help scientists track weather, climate, and environmental changes."
+                )
+            simple_en = self.simplifier.simplify(f"{technical}\n\n{fallback}", audience=self.audience)
             simple = (
                 self.translator.translate(simple_en, source_lang="en", target_lang="ar")
                 if self.language == "ar"
@@ -144,19 +193,31 @@ class ChatBot:
             self._remember(f"[image]{image_path}", resp)
             return resp
 
-        top = results[0]
-        technical_desc = top.get("description") or top.get("title") or "NASA result"
-        combined = f"Image caption: {caption}\n\nNASA context: {technical_desc}"
-        simple_en = self.simplifier.simplify(combined, audience=self.audience)
+        # Aggregate multiple results for richer context
+        k = min(5, len(results))
+        selected = results[:k]
+        descriptions: List[str] = []
+        for it in selected:
+            d = it.get("description") or it.get("title") or ""
+            if d:
+                descriptions.append(d)
+        technical_context = (
+            f"Image caption: {caption}\n\nNASA context from top results:\n\n" + "\n\n".join(descriptions)
+            if descriptions
+            else f"Image caption: {caption}\n\nNASA context: " + (selected[0].get("title") or "NASA result")
+        )
+
+        simple_en = self.simplifier.simplify(technical_context, audience=self.audience)
         simple = (
             self.translator.translate(simple_en, source_lang="en", target_lang="ar")
             if self.language == "ar"
             else simple_en
         )
         formatted_sources = [
-            {"title": top.get("title"), "preview_url": top.get("preview_url"), "nasa_id": top.get("nasa_id")}
+            {"title": it.get("title"), "preview_url": it.get("preview_url"), "nasa_id": it.get("nasa_id")}
+            for it in selected
         ]
-        resp = {"technical": combined, "simple": simple, "sources": formatted_sources}
+        resp = {"technical": technical_context, "simple": simple, "sources": formatted_sources}
         self._remember(f"[image]{image_path}", resp)
         return resp
 
