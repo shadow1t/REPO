@@ -1,0 +1,11 @@
+jupyter
+scikit-learn
+pandas
+matplotlib
+transformers
+torch
+sentencepiece
+pillow
+requests
+streamlit
+python-dotenv
