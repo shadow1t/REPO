@@ -84,9 +84,13 @@ def main():
 
     _ensure_bot(lang, use_vision, api_key, audience, model_name)
 
-    # Model status
+    # Model status (robust without relying on method existence)
     st.sidebar.subheader("Model status")
-    st.sidebar.write(st.session_state.bot.status())
+    bot = st.session_state.bot
+    has_blip = bool(getattr(getattr(bot, "captioner", None), "model", None))
+    has_flan = bool(getattr(getattr(bot, "simplifier", None), "_pipe", None))
+    has_marian = bool(getattr(getattr(bot, "translator", None), "_model", None))
+    st.sidebar.write({"has_blip": has_blip, "has_flan": has_flan, "has_marian": has_marian})
 
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
