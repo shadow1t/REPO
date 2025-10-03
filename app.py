@@ -84,6 +84,10 @@ def main():
 
     _ensure_bot(lang, use_vision, api_key, audience, model_name)
 
+    # Model status
+    st.sidebar.subheader("Model status")
+    st.sidebar.write(st.session_state.bot.status())
+
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
@@ -91,13 +95,13 @@ def main():
     prompt = st.chat_input("اكتب سؤالك عن ناسا/الأقمار/الأرض/المحيطات هنا...")
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
-        resp = st.session_state.bot.ask(prompt.strip())
+        with st.spinner("جارٍ البحث والتبسيط من مصادر ناسا..."):
+            resp = st.session_state.bot.ask(prompt.strip())
         content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
         src = _format_sources(resp["sources"])
         if src:
             content += f"\n\n### المصادر\n{src}"
         st.session_state.messages.append({"role": "assistant", "content": content})
-        st.rerun()
 
     st.divider()
     st.subheader("وصف صورة والبحث عن سياق من ناسا")
@@ -106,19 +110,20 @@ def main():
         tmp_path = f"/tmp/{img.name}"
         with open(tmp_path, "wb") as f:
             f.write(img.getbuffer())
-        resp = st.session_state.bot.describe_image(tmp_path)
+        with st.spinner("جارٍ توصيف الصورة والبحث في مصادر ناسا..."):
+            resp = st.session_state.bot.describe_image(tmp_path)
         content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
         src = _format_sources(resp["sources"])
         if src:
             content += f"\n\n### المصادر\n{src}"
         st.session_state.messages.append({"role": "assistant", "content": content})
-        st.rerun()
 
     st.divider()
     st.markdown(
         "Notes: Uses NASA public APIs (Image Library). "
-        "Image captioning uses BLIP base locally. Text simplification uses FLAN‑T5. "
-        "Arabic translation uses MarianMT."
+        "Image captioning uses BLIP base locally when available; otherwise uses a lightweight heuristic. "
+        "Text simplification uses FLAN‑T5 when available; otherwise uses rule-based fallback. "
+        "Arabic translation uses MarianMT when available; otherwise uses LibreTranslate."
     )
 
 
