@@ -104,23 +104,33 @@ def main():
                 resp = st.session_state.bot.ask(prompt.strip())
             content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
             src = _format_sources(resp["sources"])
-           "\n\n### المصادر\n{src}"
-        st.session_state.messages.append({"role": "assistant", "content": content})
+            if src:
+                content += f"\n\n### المصادر\n{src}"
+            st.session_state.messages.append({"role": "assistant", "content": content})
+            with st.chat_message("assistant"):
+                st.markdown(content)
+        except Exception as e:
+            st.error(f"حدث خطأ أثناء معالجة السؤال: {e}")
 
     st.divider()
     st.subheader("وصف صورة والبحث عن سياق من ناسا")
     img = st.file_uploader("ارفع صورة (PNG/JPG)", type=["png", "jpg", "jpeg"])
     if img is not None and st.button("وصف والبحث"):
-        tmp_path = f"/tmp/{img.name}"
-        with open(tmp_path, "wb") as f:
-            f.write(img.getbuffer())
-        with st.spinner("جارٍ توصيف الصورة والبحث في مصادر ناسا..."):
-            resp = st.session_state.bot.describe_image(tmp_path)
-        content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
-        src = _format_sources(resp["sources"])
-        if src:
-            content += f"\n\n### المصادر\n{src}"
-        st.session_state.messages.append({"role": "assistant", "content": content})
+        try:
+            tmp_path = f"/tmp/{img.name}"
+            with open(tmp_path, "wb") as f:
+                f.write(img.getbuffer())
+            with st.spinner("جارٍ توصيف الصورة والبحث في مصادر ناسا..."):
+                resp = st.session_state.bot.describe_image(tmp_path)
+            content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
+            src = _format_sources(resp["sources"])
+            if src:
+                content += f"\n\n### المصادر\n{src}"
+            st.session_state.messages.append({"role": "assistant", "content": content})
+            with st.chat_message("assistant"):
+                st.markdown(content)
+        except Exception as e:
+            st.error(f"حدث خطأ أثناء توصيف الصورة: {e}")
 
     st.divider()
     st.markdown(
