@@ -99,12 +99,12 @@ def main():
     prompt = st.chat_input("اكتب سؤالك عن ناسا/الأقمار/الأرض/المحيطات هنا...")
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.spinner("جارٍ البحث والتبسيط من مصادر ناسا..."):
-            resp = st.session_state.bot.ask(prompt.strip())
-        content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
-        src = _format_sources(resp["sources"])
-        if src:
-            content += f"\n\n### المصادر\n{src}"
+        try:
+            with st.spinner("جارٍ البحث والتبسيط من مصادر ناسا..."):
+                resp = st.session_state.bot.ask(prompt.strip())
+            content = f"### شرح مبسّط\n{resp['simple']}\n\n### السياق الفني (من ناسا)\n{resp['technical']}"
+            src = _format_sources(resp["sources"])
+           "\n\n### المصادر\n{src}"
         st.session_state.messages.append({"role": "assistant", "content": content})
 
     st.divider()
