@@ -53,7 +53,7 @@ def main():
     load_dotenv()
     st.set_page_config(page_title="NASA Chat AI", page_icon="🛰️", layout="centered")
     st.title("NASA Chat AI")
-    st.caption("Answers from NASA data, simplified for everyone. Arabic and English supported.")
+    st.caption("Answers from NASA data, simplified for everyone. Arabic and English supported. Build: v2")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
