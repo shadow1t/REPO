@@ -97,7 +97,7 @@ def main():
         if src:
             content += f"\n\n### المصادر\n{src}"
         st.session_state.messages.append({"role": "assistant", "content": content})
-        st.experimental_rerun()
+        st.rerun()
 
     st.divider()
     st.subheader("وصف صورة والبحث عن سياق من ناسا")
